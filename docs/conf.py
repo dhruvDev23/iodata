@@ -40,7 +40,7 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "example_scripts/test_scripts.py"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 intersphinx_mapping = get_intersphinx_mapping(packages={"python", "numpy", "scipy"})
 
 

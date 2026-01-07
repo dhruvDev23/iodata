@@ -18,6 +18,8 @@
 # --
 """Utility functions module."""
 
+from __future__ import annotations
+
 from io import TextIOBase
 from pathlib import Path
 from typing import TextIO
