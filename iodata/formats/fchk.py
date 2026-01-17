@@ -76,7 +76,17 @@ CONVENTIONS = {
         "run_type",
         "title",
     ],
-    ["energy", "atfrozen", "atgradient", "athessian", "atmasses", "one_rdms", "extra", "moments"],
+    [
+        "bonds",
+        "energy",
+        "atfrozen",
+        "atgradient",
+        "athessian",
+        "atmasses",
+        "one_rdms",
+        "extra",
+        "moments",
+    ],
 )
 def load_one(lit: LineIterator) -> dict:
     """Do not edit this docstring. It will be overwritten."""
@@ -125,6 +135,10 @@ def load_one(lit: LineIterator) -> dict:
             "Cartesian Gradient",
             "Cartesian Force Constants",
             "MicOpt",
+            "MxBond",
+            "NBond",
+            "IBond",
+            "RBond",
         ],
     )
 
@@ -277,6 +291,11 @@ def load_one(lit: LineIterator) -> dict:
         atcharges["cm5"] = fchk["Type 7 Charges"]
     if atcharges:
         result["atcharges"] = atcharges
+
+    # F) Load connectivity (bonds)
+    bonds = _load_connectivity(fchk, len(result["atnums"]))
+    if bonds is not None:
+        result["bonds"] = bonds
 
     return result
 
@@ -468,6 +487,139 @@ def _load_fchk_field(lit: LineIterator, label_patterns: list[str]) -> tuple[str,
             return label, value
 
 
+def _load_connectivity(fchk: dict, natoms: int) -> NDArray[int] | None:
+    """Load connectivity (bond) information from FCHK data.
+
+    Parameters
+    ----------
+    fchk
+        Dictionary containing parsed FCHK fields.
+    natoms
+        Number of atoms in the molecule.
+
+    Returns
+    -------
+    bonds
+        An (nbond, 3) integer array with [atom1, atom2, bond_type] for each bond,
+        or None if connectivity information is not present or invalid.
+        Atom indices are 0-based. Bond types follow the convention in
+        ``iodata.periodic.bond2num`` (1=single, 2=double, 3=triple).
+
+    Notes
+    -----
+    The FCHK format stores connectivity using four fields:
+    - MxBond: Maximum number of bonds per atom (scalar)
+    - NBond: Number of bonds for each atom (array of length natoms)
+    - IBond: Bonded atom indices, 1-based (array of length natoms * mxbond)
+    - RBond: Bond orders (array of length natoms * mxbond)
+
+    """
+    # Check if MxBond is present and valid
+    mxbond = fchk.get("MxBond")
+    if mxbond is None or mxbond < 1:
+        return None
+
+    # Get required arrays
+    nbond_arr = fchk.get("NBond")
+    ibond_arr = fchk.get("IBond")
+
+    # NBond and IBond are required if MxBond is set
+    if nbond_arr is None or ibond_arr is None:
+        return None
+
+    # Check array sizes match expected dimensions
+    if len(nbond_arr) != natoms:
+        return None
+    if len(ibond_arr) != natoms * mxbond:
+        return None
+
+    # Get optional RBond array (bond orders)
+    rbond_arr = fchk.get("RBond")
+    if rbond_arr is not None and len(rbond_arr) != natoms * mxbond:
+        rbond_arr = None
+
+    # Reshape IBond and RBond to (natoms, mxbond)
+    ibond = ibond_arr.reshape(natoms, mxbond)
+    rbond = rbond_arr.reshape(natoms, mxbond) if rbond_arr is not None else None
+
+    # Build bond list, avoiding duplicates
+    # Each bond appears twice in FCHK (once for each atom in the pair)
+    # We only add bonds where atom_i < atom_j to avoid duplicates
+    bonds = []
+    for iatom in range(natoms):
+        num_bonds = int(nbond_arr[iatom])
+        for j in range(min(num_bonds, mxbond)):
+            partner = int(ibond[iatom, j]) - 1  # Convert from 1-based to 0-based
+            if partner < 0 or partner >= natoms:
+                continue
+            if partner > iatom:  # Only add each bond once
+                bond_order = round(rbond[iatom, j]) if rbond is not None else 1
+                # FCHK uses 0=no bond, 1=single, 2=double, 3=triple
+                # This matches IOData's bond type convention
+                if bond_order >= 1:
+                    bonds.append([iatom, partner, bond_order])
+
+    if len(bonds) == 0:
+        return None
+
+    return np.array(bonds, dtype=int)
+
+
+def _dump_connectivity(bonds: NDArray[int], natom: int, f: TextIO):
+    """Dump connectivity (bond) information to FCHK file.
+
+    Parameters
+    ----------
+    bonds
+        An (nbond, 3) array with [atom1, atom2, bond_type] for each bond.
+        Atom indices are 0-based.
+    natom
+        Number of atoms in the molecule.
+    f
+        The file object to write to.
+
+    """
+    if len(bonds) == 0:
+        return
+
+    # Calculate MxBond (maximum bonds per atom)
+    bond_counts = np.zeros(natom, dtype=int)
+    for iatom, jatom, _ in bonds:
+        bond_counts[iatom] += 1
+        bond_counts[jatom] += 1
+    mxbond = int(bond_counts.max())
+
+    if mxbond == 0:
+        return
+
+    # Build NBond, IBond, RBond arrays
+    nbond = bond_counts
+    ibond = np.zeros((natom, mxbond), dtype=int)
+    rbond = np.zeros((natom, mxbond), dtype=float)
+
+    # Track how many bonds we've added for each atom
+    bond_idx = np.zeros(natom, dtype=int)
+
+    for iatom, jatom, bond_order in bonds:
+        # Add bond from iatom's perspective
+        idx_i = bond_idx[iatom]
+        ibond[iatom, idx_i] = jatom + 1  # Convert to 1-based
+        rbond[iatom, idx_i] = float(bond_order)
+        bond_idx[iatom] += 1
+
+        # Add bond from jatom's perspective
+        idx_j = bond_idx[jatom]
+        ibond[jatom, idx_j] = iatom + 1  # Convert to 1-based
+        rbond[jatom, idx_j] = float(bond_order)
+        bond_idx[jatom] += 1
+
+    # Write to file
+    _dump_integer_scalars("MxBond", mxbond, f)
+    _dump_integer_arrays("NBond", nbond, f)
+    _dump_integer_arrays("IBond", ibond.flatten(), f)
+    _dump_real_arrays("RBond", rbond.flatten(), f)
+
+
 def _load_dm(label: str, fchk: dict, result: dict, key: str):
     """Load a density matrix from the FCHK file if present.
 
@@ -608,6 +760,7 @@ def prepare_dump(data: IOData, allow_changes: bool, filename: str) -> IOData:
         "atgradient",
         "athessian",
         "atmasses",
+        "bonds",
         "charge",
         "energy",
         "lot",
@@ -770,6 +923,10 @@ def dump_one(f: TextIO, data: IOData):
     if data.athessian is not None:
         arr = data.athessian[np.tril_indices(data.athessian.shape[0])]
         _dump_real_arrays("Cartesian Force Constants", arr, f)
+
+    # write connectivity (bonds)
+    if data.bonds is not None and len(data.bonds) > 0:
+        _dump_connectivity(data.bonds, data.natom, f)
 
     # write moments
     if (1, "c") in data.moments:
