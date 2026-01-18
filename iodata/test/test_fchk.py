@@ -773,7 +773,8 @@ def test_load_fchk_connectivity_li2():
     assert mol.bonds is not None
     assert len(mol.bonds) == 1
     assert_equal(mol.bonds[0, :2], [0, 1])
-    assert mol.bonds[0, 2] == 3  # Triple bond (as stored in the file)
+    # Bond order 3 as stored in the test file; this test verifies parsing, not chemical accuracy.
+    assert mol.bonds[0, 2] == 3
 
 
 def test_load_fchk_no_connectivity():
