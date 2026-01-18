@@ -293,7 +293,7 @@ def load_one(lit: LineIterator) -> dict:
         result["atcharges"] = atcharges
 
     # F) Load connectivity (bonds)
-    bonds = _load_connectivity(fchk, len(result["atnums"]))
+    bonds = _load_connectivity(fchk, len(result["atnums"]), lit)
     if bonds is not None:
         result["bonds"] = bonds
 
@@ -487,7 +487,7 @@ def _load_fchk_field(lit: LineIterator, label_patterns: list[str]) -> tuple[str,
             return label, value
 
 
-def _load_connectivity(fchk: dict, natoms: int) -> NDArray[int] | None:
+def _load_connectivity(fchk: dict, natoms: int, lit: LineIterator) -> NDArray[int] | None:
     """Load connectivity (bond) information from FCHK data.
 
     Parameters
@@ -496,12 +496,14 @@ def _load_connectivity(fchk: dict, natoms: int) -> NDArray[int] | None:
         Dictionary containing parsed FCHK fields.
     natoms
         Number of atoms in the molecule.
+    lit
+        The line iterator for error reporting.
 
     Returns
     -------
     bonds
         An (nbond, 3) integer array with [atom1, atom2, bond_type] for each bond,
-        or None if connectivity information is not present or invalid.
+        or None if connectivity information is not present.
         Atom indices are 0-based. Bond types follow the convention in
         ``iodata.periodic.bond2num`` (1=single, 2=double, 3=triple).
 
@@ -525,44 +527,47 @@ def _load_connectivity(fchk: dict, natoms: int) -> NDArray[int] | None:
 
     # NBond and IBond are required if MxBond is set
     if nbond_arr is None or ibond_arr is None:
-        return None
+        raise LoadError("MxBond is set but NBond or IBond sections are missing.", lit.filename)
 
     # Check array sizes match expected dimensions
     if len(nbond_arr) != natoms:
-        return None
+        raise LoadError(
+            f"NBond array size {len(nbond_arr)} does not match number of atoms {natoms}.",
+            lit.filename,
+        )
     if len(ibond_arr) != natoms * mxbond:
-        return None
+        raise LoadError(
+            f"IBond array size {len(ibond_arr)} does not match expected {natoms * mxbond}.",
+            lit.filename,
+        )
 
-    # Get optional RBond array (bond orders)
     rbond_arr = fchk.get("RBond")
     if rbond_arr is not None and len(rbond_arr) != natoms * mxbond:
         rbond_arr = None
 
-    # Reshape IBond and RBond to (natoms, mxbond)
     ibond = ibond_arr.reshape(natoms, mxbond)
     rbond = rbond_arr.reshape(natoms, mxbond) if rbond_arr is not None else None
 
-    # Build bond list, avoiding duplicates
-    # Each bond appears twice in FCHK (once for each atom in the pair)
-    # We only add bonds where atom_i < atom_j to avoid duplicates
-    bonds = []
-    for iatom in range(natoms):
-        num_bonds = int(nbond_arr[iatom])
-        for j in range(min(num_bonds, mxbond)):
-            partner = int(ibond[iatom, j]) - 1  # Convert from 1-based to 0-based
-            if partner < 0 or partner >= natoms:
-                continue
-            if partner > iatom:  # Only add each bond once
-                bond_order = round(rbond[iatom, j]) if rbond is not None else 1
-                # FCHK uses 0=no bond, 1=single, 2=double, 3=triple
-                # This matches IOData's bond type convention
-                if bond_order >= 1:
-                    bonds.append([iatom, partner, bond_order])
+    # Vectorized bond extraction
+    nb = np.asarray(nbond_arr, dtype=np.int64)
+    partner = np.asarray(ibond, dtype=np.int64) - 1  # 0-based indexing
+    i = np.arange(natoms)[:, None]
+    j = np.arange(mxbond)[None, :]
 
-    if len(bonds) == 0:
+    present = j < nb[:, None]
+    valid = present & (partner >= 0) & (partner < natoms) & (partner > i)
+
+    if rbond is None:
+        bo = np.ones_like(partner, dtype=np.int64)
+    else:
+        bo = np.rint(np.asarray(rbond)).astype(np.int64)
+        valid &= bo >= 1
+
+    ii, jj = np.nonzero(valid)
+    if len(ii) == 0:
         return None
 
-    return np.array(bonds, dtype=int)
+    return np.stack((ii, partner[ii, jj], bo[ii, jj]), axis=1)
 
 
 def _dump_connectivity(bonds: NDArray[int], natom: int, f: TextIO):
@@ -582,38 +587,48 @@ def _dump_connectivity(bonds: NDArray[int], natom: int, f: TextIO):
     if len(bonds) == 0:
         return
 
-    # Calculate MxBond (maximum bonds per atom)
-    bond_counts = np.zeros(natom, dtype=int)
-    for iatom, jatom, _ in bonds:
-        bond_counts[iatom] += 1
-        bond_counts[jatom] += 1
-    mxbond = int(bond_counts.max())
+    atom1 = bonds[:, 0]
+    atom2 = bonds[:, 1]
+    bond_order = bonds[:, 2]
+
+    # Calculate bond counts per atom
+    nbond = np.zeros(natom, dtype=int)
+    np.add.at(nbond, atom1, 1)
+    np.add.at(nbond, atom2, 1)
+    mxbond = int(nbond.max())
 
     if mxbond == 0:
         return
 
-    # Build NBond, IBond, RBond arrays
-    nbond = bond_counts
     ibond = np.zeros((natom, mxbond), dtype=int)
     rbond = np.zeros((natom, mxbond), dtype=float)
 
-    # Track how many bonds we've added for each atom
-    bond_idx = np.zeros(natom, dtype=int)
+    # Compute per-atom bond indices
+    order1 = np.argsort(atom1, kind="stable")
+    sorted_atom1 = atom1[order1]
+    idx1 = np.zeros(len(atom1), dtype=int)
+    idx1[order1] = (
+        np.arange(len(atom1))
+        - np.searchsorted(sorted_atom1, sorted_atom1, side="left")[np.argsort(order1)]
+    )
 
-    for iatom, jatom, bond_order in bonds:
-        # Add bond from iatom's perspective
-        idx_i = bond_idx[iatom]
-        ibond[iatom, idx_i] = jatom + 1  # Convert to 1-based
-        rbond[iatom, idx_i] = float(bond_order)
-        bond_idx[iatom] += 1
+    order2 = np.argsort(atom2, kind="stable")
+    sorted_atom2 = atom2[order2]
+    idx2_base = np.zeros(len(atom2), dtype=int)
+    idx2_base[order2] = (
+        np.arange(len(atom2))
+        - np.searchsorted(sorted_atom2, sorted_atom2, side="left")[np.argsort(order2)]
+    )
 
-        # Add bond from jatom's perspective
-        idx_j = bond_idx[jatom]
-        ibond[jatom, idx_j] = iatom + 1  # Convert to 1-based
-        rbond[jatom, idx_j] = float(bond_order)
-        bond_idx[jatom] += 1
+    atom1_counts = np.zeros(natom, dtype=int)
+    np.add.at(atom1_counts, atom1, 1)
+    idx2 = idx2_base + atom1_counts[atom2]
 
-    # Write to file
+    # Fill arrays with 1-based indexing for FCHK format
+    ibond[atom1, idx1] = atom2 + 1
+    rbond[atom1, idx1] = bond_order.astype(float)
+    ibond[atom2, idx2] = atom1 + 1
+    rbond[atom2, idx2] = bond_order.astype(float)
     _dump_integer_scalars("MxBond", mxbond, f)
     _dump_integer_arrays("NBond", nbond, f)
     _dump_integer_arrays("IBond", ibond.flatten(), f)
