@@ -43,6 +43,12 @@ templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 intersphinx_mapping = get_intersphinx_mapping(packages={"python", "numpy", "scipy"})
 
+nitpick_ignore_regex = [
+    (r"py:class", r"numpy\._typing\..*"),
+    (r"py:class", r"numpy\.dtype\[.*\]"),
+    (r"py:obj", r"numpy\._typing\..*"),
+]
+
 
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
