@@ -742,3 +742,77 @@ def test_methanol_g16_scan():
                 -115.43621498,
             ]
         )
+
+
+def test_load_fchk_connectivity_h2o():
+    """Test parsing connectivity from H2O FCHK file."""
+    mol = load_fchk_helper("h2o_sto3g.fchk")
+    # H2O should have 2 bonds: O-H and O-H
+    assert mol.bonds is not None
+    assert len(mol.bonds) == 2
+    # Check atom indices (0-based): O(0) bonded to H(1) and H(2)
+    assert_equal(mol.bonds[:, :2], [[0, 1], [0, 2]])
+    # Check bond types: all single bonds (type 1)
+    assert_equal(mol.bonds[:, 2], [1, 1])
+
+
+def test_load_fchk_connectivity_peroxide():
+    """Test parsing connectivity from peroxide FCHK file."""
+    mol = load_fchk_helper("peroxide_opt.fchk")
+    # H2O2 (peroxide) has 3 bonds: O-O, O-H, O-H
+    assert mol.bonds is not None
+    assert len(mol.bonds) == 3
+    # All should be single bonds
+    assert_equal(mol.bonds[:, 2], [1, 1, 1])
+
+
+def test_load_fchk_connectivity_li2():
+    """Test parsing connectivity from Li2 FCHK file."""
+    mol = load_fchk_helper("li2_g09_nbasis_indep.fchk")
+    # Li2 should have 1 bond: Li-Li
+    assert mol.bonds is not None
+    assert len(mol.bonds) == 1
+    assert_equal(mol.bonds[0, :2], [0, 1])
+    # Bond order 3 as stored in the test file; this test verifies parsing, not chemical accuracy.
+    assert mol.bonds[0, 2] == 3
+
+
+def test_load_fchk_no_connectivity():
+    """Test FCHK file with zero bonds (NBond all zeros)."""
+    # water_atcharges.fchk has MxBond=1 but NBond=[0,0,0] - no actual bonds
+    mol = load_fchk_helper("water_atcharges.fchk")
+    # Should return None when no actual bonds are present
+    assert mol.bonds is None
+
+
+def test_dump_load_connectivity_roundtrip(tmpdir):
+    """Test that connectivity survives a dump/load roundtrip."""
+    mol1 = load_fchk_helper("h2o_sto3g.fchk")
+    assert mol1.bonds is not None
+    original_bonds = mol1.bonds.copy()
+
+    # Dump to temporary file
+    fn_tmp = os.path.join(tmpdir, "h2o_roundtrip.fchk")
+    dump_one(mol1, fn_tmp)
+
+    # Load back
+    mol2 = load_one(fn_tmp)
+
+    # Verify bonds match
+    assert mol2.bonds is not None
+    assert_equal(mol2.bonds, original_bonds)
+
+
+def test_dump_load_connectivity_peroxide_roundtrip(tmpdir):
+    """Test connectivity roundtrip for peroxide."""
+    mol1 = load_fchk_helper("peroxide_opt.fchk")
+    assert mol1.bonds is not None
+
+    fn_tmp = os.path.join(tmpdir, "peroxide_roundtrip.fchk")
+    dump_one(mol1, fn_tmp)
+    mol2 = load_one(fn_tmp)
+
+    assert mol2.bonds is not None
+    assert len(mol2.bonds) == len(mol1.bonds)
+    # Bond order should be preserved
+    assert_equal(mol1.bonds[:, 2], mol2.bonds[:, 2])
