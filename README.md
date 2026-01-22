@@ -6,7 +6,7 @@
 [![CodeFactor](https://www.codefactor.io/repository/github/theochem/iodata/badge)](https://www.codefactor.io/repository/github/theochem/iodata)
 [![codecov](https://codecov.io/gh/theochem/iodata/graph/badge.svg?token=QPUfAWj7vf)](https://codecov.io/gh/theochem/iodata)
 [![PyPI](https://img.shields.io/pypi/v/qc-iodata.svg)](https://pypi.python.org/pypi/qc-iodata/)
-![Version](https://img.shields.io/pypi/pyversions/qc-iodata.svg)
+[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 ![License](https://img.shields.io/github/license/theochem/iodata)
 
 ## About
