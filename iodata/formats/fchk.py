@@ -313,6 +313,12 @@ attribute:
 - ``istep`` is the counter within one "point"
 - ``nstep`` is the total number of geometries within in a "point".
 - ``reaction_coordinate`` is only present in case of an IRC calculation.
+
+Load Error Recovery:
+In some cases (e.g. single-step optimizations), the trajectory block (IRC/Optimization Number of geometries)
+may be missing. In these cases, ``load_many`` will attempt to recover by constructing a single-frame
+trajectory from the current geometry and properties (Energy, Gradient) if the file is identified as
+an optimization or scan run.
 """
 
 
@@ -331,6 +337,8 @@ def load_many(lit: LineIterator) -> Iterator[dict]:
             "Atomic numbers",
             "Current cartesian coordinates",
             "Nuclear charges",
+            "Total Energy",
+            "Cartesian Gradient",
             "IRC *",
             "Optimization *",
             "Opt point *",
@@ -338,14 +346,38 @@ def load_many(lit: LineIterator) -> Iterator[dict]:
     )
 
     # Determine the type of calculation: IRC or Optimization
-    if "IRC Number of geometries" in fchk:
-        prefix = "IRC point"
-        nsteps = fchk["IRC Number of geometries"]
-    elif "Optimization Number of geometries" in fchk:
-        prefix = "Opt point"
-        nsteps = fchk["Optimization Number of geometries"]
-    else:
-        raise LoadError("Cannot find IRC or Optimization trajectory in FCHK file.", lit)
+    try:
+        if "IRC Number of geometries" in fchk:
+            prefix = "IRC point"
+            nsteps = fchk["IRC Number of geometries"]
+        elif "Optimization Number of geometries" in fchk:
+            prefix = "Opt point"
+            nsteps = fchk["Optimization Number of geometries"]
+        else:
+            raise LoadError("Cannot find IRC or Optimization trajectory in FCHK file.", lit)
+    except LoadError:
+        # If the trajectory is missing, we might have a single-frame optimization
+        # (e.g. because it converged in one step). In that case, we return the
+        # current geometry as the only frame.
+        if fchk.get("command") in ["FOpt", "Scan", "IRC"]:
+            yield {
+                "title": fchk["title"],
+                "atnums": fchk["Atomic numbers"],
+                "atcorenums": fchk["Nuclear charges"],
+                "energy": fchk.get("Total Energy"),
+                "atcoords": fchk["Current cartesian coordinates"].reshape(-1, 3),
+                "atgradient": fchk.get("Cartesian Gradient", np.zeros_like(
+                    fchk["Current cartesian coordinates"]
+                )).reshape(-1, 3),
+                "extra": {
+                    "ipoint": 0,
+                    "npoint": 1,
+                    "istep": 0,
+                    "nstep": 1,
+                },
+            }
+            return
+        raise
 
     natom = fchk["Atomic numbers"].size
     for ipoint, nstep in enumerate(nsteps):
