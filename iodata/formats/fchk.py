@@ -363,9 +363,9 @@ def load_many(lit: LineIterator) -> Iterator[dict]:
                 "atcorenums": fchk["Nuclear charges"],
                 "energy": fchk.get("Total Energy"),
                 "atcoords": fchk["Current cartesian coordinates"].reshape(-1, 3),
-                "atgradient": fchk.get("Cartesian Gradient", np.zeros_like(
-                    fchk["Current cartesian coordinates"]
-                )).reshape(-1, 3),
+                "atgradient": fchk.get(
+                    "Cartesian Gradient", np.zeros_like(fchk["Current cartesian coordinates"])
+                ).reshape(-1, 3),
                 "extra": {
                     "ipoint": 0,
                     "npoint": 1,
