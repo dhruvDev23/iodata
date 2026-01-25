@@ -817,10 +817,11 @@ def test_dump_load_connectivity_peroxide_roundtrip(tmpdir):
     # Bond order should be preserved
     assert_equal(mol1.bonds[:, 2], mol2.bonds[:, 2])
 
+
 def test_load_fchk_single_atom_optimization():
     """Test loading a single-atom optimization (missing trajectory block)."""
     trj = load_fchk_trj_helper("atom_opt.fchk")
-    
+
     # Should load exactly one frame
     assert len(trj) == 1
     mol = trj[0]
@@ -848,4 +849,3 @@ def test_load_fchk_single_atom_optimization():
 
     # Check gradient (fallback should be zero if missing) (Copilot suggestion)
     assert_allclose(mol.atgradient, [[0.0, 0.0, 0.0]])
-
