@@ -313,6 +313,12 @@ attribute:
 - ``istep`` is the counter within one "point"
 - ``nstep`` is the total number of geometries within in a "point".
 - ``reaction_coordinate`` is only present in case of an IRC calculation.
+
+Load Error Recovery:
+In some cases (e.g. single-step optimizations), the trajectory block (IRC/Optimization Number of
+geometries) may be missing. In these cases, ``load_many`` will attempt to recover by constructing a
+single-frame trajectory from the current geometry and properties (Energy, Gradient) if the file is
+identified as an optimization or scan run.
 """
 
 
@@ -331,6 +337,8 @@ def load_many(lit: LineIterator) -> Iterator[dict]:
             "Atomic numbers",
             "Current cartesian coordinates",
             "Nuclear charges",
+            "Total Energy",
+            "Cartesian Gradient",
             "IRC *",
             "Optimization *",
             "Opt point *",
@@ -345,6 +353,22 @@ def load_many(lit: LineIterator) -> Iterator[dict]:
         prefix = "Opt point"
         nsteps = fchk["Optimization Number of geometries"]
     else:
+        # If the trajectory is missing, we might have a single-frame optimization
+        # (e.g. because it converged in one step). In that case, we return the
+        # current geometry as the only frame.
+        if fchk.get("command") in ["FOpt", "Scan", "IRC"]:
+            atcoords = fchk["Current cartesian coordinates"].reshape(-1, 3)
+            atgradient = fchk.get(
+                "Cartesian Gradient", np.zeros_like(fchk["Current cartesian coordinates"])
+            ).reshape(-1, 3)
+            yield _create_frame(
+                fchk,
+                fchk.get("Total Energy"),
+                atcoords,
+                atgradient,
+                {"ipoint": 0, "npoint": 1, "istep": 0, "nstep": 1},
+            )
+            return
         raise LoadError("Cannot find IRC or Optimization trajectory in FCHK file.", lit)
 
     natom = fchk["Atomic numbers"].size
@@ -370,23 +394,43 @@ def load_many(lit: LineIterator) -> Iterator[dict]:
             )
         reference_energy = fchk.get("Optimization Reference Energy", 0.0)
         for istep, (energy, recor, atcoords, gradients) in enumerate(trajectory):
-            data = {
-                "title": fchk["title"],
-                "atnums": fchk["Atomic numbers"],
-                "atcorenums": fchk["Nuclear charges"],
-                "energy": energy + reference_energy,
-                "atcoords": atcoords,
-                "atgradient": gradients,
-                "extra": {
-                    "ipoint": ipoint,
-                    "npoint": len(nsteps),
-                    "istep": istep,
-                    "nstep": len(trajectory),
-                },
+            extra = {
+                "ipoint": ipoint,
+                "npoint": len(nsteps),
+                "istep": istep,
+                "nstep": len(trajectory),
             }
-            if prefix == "IRC point":
-                data["extra"]["reaction_coordinate"] = recor
-            yield data
+            yield _create_frame(
+                fchk,
+                energy + reference_energy,
+                atcoords,
+                gradients,
+                extra,
+                recor if prefix == "IRC point" else None,
+            )
+
+
+def _create_frame(
+    fchk: dict,
+    energy: float | None,
+    atcoords: NDArray[float],
+    atgradient: NDArray[float],
+    extra: dict,
+    reaction_coordinate: float | None = None,
+) -> dict:
+    """Create a frame dictionary from FCHK data."""
+    data = {
+        "title": fchk["title"],
+        "atnums": fchk["Atomic numbers"],
+        "atcorenums": fchk["Nuclear charges"],
+        "energy": energy,
+        "atcoords": atcoords,
+        "atgradient": atgradient,
+        "extra": extra,
+    }
+    if reaction_coordinate is not None:
+        data["extra"]["reaction_coordinate"] = reaction_coordinate
+    return data
 
 
 def _load_fchk_low(lit: LineIterator, label_patterns: list[str] | None = None) -> dict:
